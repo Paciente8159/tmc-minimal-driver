@@ -55,6 +55,8 @@ extern "C"
     void tmc_set_current(tmc_driver_t *driver, float current, float rsense, float ihold_mul);
     uint8_t tmc_get_microstep(tmc_driver_t *driver);
     void tmc_set_microstep(tmc_driver_t *driver, uint8_t ms);
+    uint8_t tmc_get_stepinterpol(tmc_driver_t *driver);
+    void tmc_set_stepinterpol(tmc_driver_t *driver, uint8_t enable);
     uint32_t tmc_get_stealthshop(tmc_driver_t *driver);
     void tmc_set_stealthshop(tmc_driver_t *driver, uint32_t value);
     uint32_t tmc_get_status(tmc_driver_t *driver);

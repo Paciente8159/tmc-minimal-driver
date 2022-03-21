@@ -283,6 +283,27 @@ void tmc_set_microstep(tmc_driver_t *driver, uint8_t ms)
     tmc_write_register(driver, GCONF, gconf);
 }
 
+uint8_t tmc_get_stepinterpol(tmc_driver_t *driver)
+{
+    uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
+    return (chopconf & (1UL << 28)) ? 1 : 0;
+}
+
+void tmc_set_stepinterpol(tmc_driver_t *driver, uint8_t enable)
+{
+    uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
+    if (enable)
+    {
+        chopconf |= (1UL << 28);
+    }
+    else
+    {
+        chopconf &= ~(1UL << 28);
+    }
+
+    tmc_write_register(driver, CHOPCONF, chopconf);
+}
+
 uint32_t tmc_get_stealthshop(tmc_driver_t *driver)
 {
     return tmc_read_register(driver, TPWMTHRS);

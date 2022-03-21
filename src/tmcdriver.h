@@ -26,6 +26,12 @@ extern "C"
 
 #include <stdint.h>
 
+#define GCONF 0x00
+#define IHOLD_IRUN 0x10
+#define CHOPCONF 0x6C
+#define TPWMTHRS 0X13
+#define DRV_STATUS 0x6F
+
     typedef uint8_t (*tmc_getc)(void);
     typedef uint8_t (*tmc_putc)(uint8_t);
     typedef void (*tmc_initdriver)(void);

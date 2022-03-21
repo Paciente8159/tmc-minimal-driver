@@ -18,11 +18,6 @@
 
 #include "tmcdriver.h"
 
-#define IHOLD_IRUN 0x10
-#define CHOPCONF 0x6C
-#define TPWMTHRS 0X13
-#define DRV_STATUS 0x6F
-
 uint8_t tmc_crc8(uint8_t *data, uint8_t len)
 {
     int i, j;
@@ -59,6 +54,7 @@ uint32_t tmc_read_register(tmc_driver_t *driver, uint8_t address)
     uint32_t result = 0;
     switch (driver->type)
     {
+    case 2202:
     case 2208:
     case 2225:
         driver->slave = 0;
@@ -111,6 +107,7 @@ uint32_t tmc_write_register(tmc_driver_t *driver, uint8_t address, uint32_t val)
     uint32_t result = 0;
     switch (driver->type)
     {
+    case 2202:
     case 2208:
     case 2225:
         driver->slave = 0;
@@ -163,10 +160,16 @@ void tmc_init(tmc_driver_t *driver)
     }
 
     driver->init();
+
+    // disable pdn
+    uint32_t gconf = tmc_read_register(driver, GCONF);
+    gconf |= (1UL << 6);
+    tmc_write_register(driver, GCONF, gconf);
 }
 
 float tmc_get_current(tmc_driver_t *driver, float rsense)
 {
+    uint32_t gconf = tmc_read_register(driver, GCONF);
     uint32_t iholdrun = tmc_read_register(driver, IHOLD_IRUN);
     uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
     uint8_t irun = ((iholdrun >> 8) & 0x1F);
@@ -236,6 +239,7 @@ uint8_t tmc_get_microstep(tmc_driver_t *driver)
 
 void tmc_set_microstep(tmc_driver_t *driver, uint8_t ms)
 {
+    uint32_t gconf = tmc_read_register(driver, GCONF);
     uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
 
     chopconf &= ~(0xFUL << 24);
@@ -275,6 +279,8 @@ void tmc_set_microstep(tmc_driver_t *driver, uint8_t ms)
 
     chopconf |= (ms << 24);
     tmc_write_register(driver, CHOPCONF, chopconf);
+    gconf |= (1UL << 7);
+    tmc_write_register(driver, GCONF, gconf);
 }
 
 uint32_t tmc_get_stealthshop(tmc_driver_t *driver)
@@ -284,19 +290,23 @@ uint32_t tmc_get_stealthshop(tmc_driver_t *driver)
 
 void tmc_set_stealthshop(tmc_driver_t *driver, uint32_t value)
 {
+    uint32_t gconf = tmc_read_register(driver, GCONF);
     uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
 
     if (!value)
     {
         chopconf |= (0x1UL << 2);
+        gconf |= (1UL << 2);
     }
     else
     {
         chopconf &= ~(0x1UL << 2);
+        gconf &= ~(1UL << 2);
     }
 
     tmc_write_register(driver, TPWMTHRS, value);
     tmc_write_register(driver, CHOPCONF, chopconf);
+    tmc_write_register(driver, GCONF, gconf);
 }
 
 uint32_t tmc_get_status(tmc_driver_t *driver)

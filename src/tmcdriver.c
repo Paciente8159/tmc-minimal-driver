@@ -45,12 +45,13 @@ uint8_t tmc_crc8(uint8_t *data, uint8_t len)
 
 uint32_t tmc_read_register(tmc_driver_t *driver, uint8_t address)
 {
-    if (!(driver->write) || !(driver->read))
+    if (!(driver->rw))
     {
         return 0;
     }
 
     uint8_t data[8];
+    uint8_t crc = 0;
     uint32_t result = 0;
     switch (driver->type)
     {
@@ -65,17 +66,25 @@ uint32_t tmc_read_register(tmc_driver_t *driver, uint8_t address)
         data[1] = driver->slave;
         data[2] = address & 0x7F;
         data[3] = tmc_crc8(data, 3);
-        for (uint8_t i = 0; i < 4; i++)
+        driver->rw(data, 4, 8);
+        crc = tmc_crc8(data, 7);
+        if (data[0] != 0x05)
         {
-            driver->write(data[i]);
+            return TMC_READ_ERROR;
         }
-
-        for (uint8_t i = 0; i < 8; i++)
+        if (data[1] != 0xFF)
         {
-            data[i] = driver->read();
+            return TMC_READ_ERROR;
         }
-
-        result = (data[3] << 24 | data[4] << 16 | data[5] << 8 | data[6]);
+        if (data[2] != address)
+        {
+            return TMC_READ_ERROR;
+        }
+        if (crc != data[7])
+        {
+            return TMC_READ_ERROR;
+        }
+        result = ((uint32_t)data[3] << 24) | ((uint32_t)data[4] << 16) | (data[5] << 8) | data[6];
         break;
     case 2130:
         data[0] = address & 0x7F;
@@ -83,12 +92,7 @@ uint32_t tmc_read_register(tmc_driver_t *driver, uint8_t address)
         data[2] = 0;
         data[3] = 0;
         data[4] = 0;
-        for (uint8_t i = 0; i < 5; i++)
-        {
-            data[i] = driver->write(data[i]);
-        }
-
-        driver->read();
+        driver->rw(data, 5, 5);
     default:
         return 0;
     }
@@ -98,7 +102,7 @@ uint32_t tmc_read_register(tmc_driver_t *driver, uint8_t address)
 
 uint32_t tmc_write_register(tmc_driver_t *driver, uint8_t address, uint32_t val)
 {
-    if (!(driver->write) || !(driver->read))
+    if (!(driver->rw))
     {
         return 0;
     }
@@ -117,18 +121,12 @@ uint32_t tmc_write_register(tmc_driver_t *driver, uint8_t address, uint32_t val)
         data[0] = 0x05;
         data[1] = driver->slave;
         data[2] = address | 0x80;
-        data[6] = (uint8_t)(val & 0xFF);
-        val >>= 8;
-        data[5] = (uint8_t)(val & 0xFF);
-        val >>= 8;
-        data[4] = (uint8_t)(val & 0xFF);
-        val >>= 8;
-        data[3] = (uint8_t)(val & 0xFF);
+        data[3] = (val >> 24) & 0xFF;
+        data[4] = (val >> 16) & 0xFF;
+        data[5] = (val >> 8) & 0xFF;
+        data[6] = (val)&0xFF;
         data[7] = tmc_crc8(data, 7);
-        for (uint8_t i = 0; i < 8; i++)
-        {
-            driver->write(data[i]);
-        }
+        driver->rw(data, 8, 0);
         break;
     case 2130:
         data[0] = address | 0x80;
@@ -139,12 +137,7 @@ uint32_t tmc_write_register(tmc_driver_t *driver, uint8_t address, uint32_t val)
         data[2] = (uint8_t)(val & 0xFF);
         val >>= 8;
         data[1] = (uint8_t)(val & 0xFF);
-        for (uint8_t i = 0; i < 5; i++)
-        {
-            data[i] = driver->write(data[i]);
-        }
-
-        driver->read();
+        driver->rw(data, 5, 5);
     default:
         return 0;
     }
@@ -154,26 +147,30 @@ uint32_t tmc_write_register(tmc_driver_t *driver, uint8_t address, uint32_t val)
 
 void tmc_init(tmc_driver_t *driver)
 {
-    if (!(driver->init))
+    if (driver->init)
     {
-        return;
+        driver->init();
     }
 
-    driver->init();
-
-    // disable pdn
-    uint32_t gconf = tmc_read_register(driver, GCONF);
-    gconf |= (1UL << 6);
-    tmc_write_register(driver, GCONF, gconf);
+    // set initial state (spread cycle on, internal vref external resistor, shaft fwd, disable pdn, microstep from mstep, normal operation)
+    tmc_write_register(driver, GCONF, ((uint32_t)0xC5));
 }
 
 float tmc_get_current(tmc_driver_t *driver, float rsense)
 {
-    uint32_t gconf = tmc_read_register(driver, GCONF);
     uint32_t iholdrun = tmc_read_register(driver, IHOLD_IRUN);
-    uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
-    uint8_t irun = ((iholdrun >> 8) & 0x1F);
+    if (iholdrun == TMC_READ_ERROR)
+    {
+        return -1.0f;
+    }
 
+    uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
+    if (chopconf == TMC_READ_ERROR)
+    {
+        return -1.0f;
+    }
+
+    uint8_t irun = ((iholdrun >> 8) & 0x1F);
     return (float)(irun + 1) / 32.0 * ((chopconf & (1UL << 17)) ? 0.180 : 0.325) / (rsense + 0.02) / 1.41421 * 1000;
 }
 
@@ -183,34 +180,46 @@ void tmc_set_current(tmc_driver_t *driver, float current, float rsense, float ih
     // If Current Scale is too low, turn on high sensitivity R_sense and calculate again
     uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
 
+    if (chopconf == TMC_READ_ERROR)
+    {
+        return;
+    }
+
     if (currentsense < 16)
     {
         // enable vsense
-        chopconf |= (1UL << 17);
+        chopconf |= (((uint32_t)1) << 17);
         tmc_write_register(driver, CHOPCONF, chopconf);
         currentsense = 32.0 * 1.41421 * current / 1000.0 * (rsense + 0.02) / 0.180 - 1;
     }
-    else if (chopconf & (1UL << 17)) // check if VSENSE is enabled
-    {                                // If CS >= 16, turn off high_sense_r if it's currently ON
+    else if (chopconf & (((uint32_t)1) << 17)) // check if VSENSE is enabled
+    {                                          // If CS >= 16, turn off high_sense_r if it's currently ON
         // disable vsense
         //  enable vsense
-        chopconf &= ~(1UL << 17);
+        chopconf &= ~(((uint32_t)1) << 17);
         tmc_write_register(driver, CHOPCONF, chopconf);
     }
 
-    uint32_t iholdrun = tmc_read_register(driver, IHOLD_IRUN);
+    uint32_t iholdrun = 0;
+
     // rms current
-    iholdrun &= ~(0x1F1FUL);
-    iholdrun |= (currentsense & 0x1FUL);
+    iholdrun = (currentsense & 0x1F);
+    iholdrun <<= 8;
     // hold current
     currentsense = (uint8_t)(currentsense * ihold_mul);
-    iholdrun |= ((currentsense << 8) & 0x1F00UL);
+    iholdrun |= (currentsense & 0x1F);
     tmc_write_register(driver, IHOLD_IRUN, iholdrun);
 }
 
-uint8_t tmc_get_microstep(tmc_driver_t *driver)
+int32_t tmc_get_microstep(tmc_driver_t *driver)
 {
     uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
+
+    if (chopconf == TMC_READ_ERROR)
+    {
+        return -1;
+    }
+
     uint8_t ms = (uint8_t)((chopconf >> 24) & 0x0F);
 
     switch (ms)
@@ -234,15 +243,24 @@ uint8_t tmc_get_microstep(tmc_driver_t *driver)
     case 8:
         return 0;
     }
-    return 0;
+    return -1;
 }
 
-void tmc_set_microstep(tmc_driver_t *driver, uint8_t ms)
+void tmc_set_microstep(tmc_driver_t *driver, int16_t ms)
 {
     uint32_t gconf = tmc_read_register(driver, GCONF);
-    uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
+    if (gconf == TMC_READ_ERROR)
+    {
+        return;
+    }
 
-    chopconf &= ~(0xFUL << 24);
+    uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
+    if (chopconf == TMC_READ_ERROR)
+    {
+        return;
+    }
+
+    chopconf &= ~(((uint32_t)0xF) << 24);
 
     switch (ms)
     {
@@ -274,31 +292,44 @@ void tmc_set_microstep(tmc_driver_t *driver, uint8_t ms)
         ms = 8;
         break;
     default:
+        if (ms < 0)
+        {
+            gconf &= ~((uint32_t)0xC0);
+            tmc_write_register(driver, GCONF, gconf);
+            return;
+        }
         break;
     }
 
-    chopconf |= (ms << 24);
-    tmc_write_register(driver, CHOPCONF, chopconf);
-    gconf |= (1UL << 7);
+    gconf |= ((uint32_t)0xC0);
+    gconf &= 0xFF;
     tmc_write_register(driver, GCONF, gconf);
+    chopconf |= (((uint32_t)ms) << 24);
+    tmc_write_register(driver, CHOPCONF, chopconf);
 }
 
 uint8_t tmc_get_stepinterpol(tmc_driver_t *driver)
 {
     uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
-    return (chopconf & (1UL << 28)) ? 1 : 0;
+    return (chopconf & (((uint32_t)1) << 28)) ? 1 : 0;
 }
 
 void tmc_set_stepinterpol(tmc_driver_t *driver, uint8_t enable)
 {
     uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
+
+    if (chopconf == TMC_READ_ERROR)
+    {
+        return;
+    }
+
     if (enable)
     {
-        chopconf |= (1UL << 28);
+        chopconf |= (((uint32_t)1) << 28);
     }
     else
     {
-        chopconf &= ~(1UL << 28);
+        chopconf &= ~(((uint32_t)1) << 28);
     }
 
     tmc_write_register(driver, CHOPCONF, chopconf);
@@ -309,28 +340,35 @@ uint32_t tmc_get_stealthshop(tmc_driver_t *driver)
     return tmc_read_register(driver, TPWMTHRS);
 }
 
-void tmc_set_stealthshop(tmc_driver_t *driver, uint32_t value)
+void tmc_set_stealthchop(tmc_driver_t *driver, uint32_t value)
 {
     uint32_t gconf = tmc_read_register(driver, GCONF);
+    if (gconf == TMC_READ_ERROR)
+    {
+        return;
+    }
+
     uint32_t chopconf = tmc_read_register(driver, CHOPCONF);
+    if (chopconf == TMC_READ_ERROR)
+    {
+        return;
+    }
 
     if (!value)
     {
-        chopconf |= (0x1UL << 2);
-        gconf |= (1UL << 2);
+        gconf |= ((uint32_t)0x04);
     }
     else
     {
-        chopconf &= ~(0x1UL << 2);
-        gconf &= ~(1UL << 2);
+        gconf &= ~((uint32_t)0x04);
     }
 
-    tmc_write_register(driver, TPWMTHRS, value);
-    tmc_write_register(driver, CHOPCONF, chopconf);
+    gconf &= 0xFF;
     tmc_write_register(driver, GCONF, gconf);
+    tmc_write_register(driver, TPWMTHRS, value);
 }
 
 uint32_t tmc_get_status(tmc_driver_t *driver)
 {
-    tmc_read_register(driver, DRV_STATUS);
+    return tmc_read_register(driver, DRV_STATUS);
 }

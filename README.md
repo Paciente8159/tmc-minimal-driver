@@ -19,9 +19,8 @@ Further functionalities can be developed around this library by adding custom fu
 tmc-minimal-driver exposes a basic struct that allows to read and write registers inside the TMC.
 
 ```
-    typedef uint8_t (*tmc_getc)(void);
-    typedef uint8_t (*tmc_putc)(uint8_t);
-    typedef void (*tmc_initdriver)(void);
+    typedef void (*tmc_rw)(uint8_t *, uint8_t, uint8_t);
+    typedef void (*tmc_startup)(void);
 
     typedef struct
     {
@@ -31,10 +30,8 @@ tmc-minimal-driver exposes a basic struct that allows to read and write register
         uint8_t slave;
         // Callback for the UART/SPI interface initialization
         tmc_initdriver init;
-        // Callback for UART getc. If the driver uses SPI, this callback should disable the CS pin
-        tmc_getc read;
-        // Callback for UART putc. If the driver uses SPI, this callback should enable the CS pin and transmit a spi byte
-        tmc_putc write;
+        // Callback for RW
+        tmc_rw rw;
     } tmc_driver_t;
 ```
 
@@ -53,8 +50,7 @@ To use this on a driver (let's say a TMC2208) you can do it like this:
         tmc_driver_t mydriver = {
             .type = 2208;
             .init = NULL; //if no initializtion needed just set to NULL
-            .read = &mydriver_getc;
-            .write = &mydriver_putc;
+            .rw = &mydriver_rw;
         };
 
         tmc_init(&mydriver);
